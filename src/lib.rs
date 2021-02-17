@@ -7,13 +7,17 @@
 //!
 //! [tokio-util]: https://docs.rs/tokio-util
 
-use std::alloc::Layout;
-use std::future::Future;
-use std::panic::AssertUnwindSafe;
-use std::pin::Pin;
-use std::ptr::{self, NonNull};
-use std::task::{Context, Poll};
-use std::{fmt, panic};
+#![no_std]
+extern crate alloc;
+
+use alloc::alloc::Layout;
+use alloc::boxed::Box;
+use core::fmt;
+use core::future::Future;
+use core::mem::ManuallyDrop;
+use core::pin::Pin;
+use core::ptr::{self, NonNull};
+use core::task::{Context, Poll};
 
 /// A reusable `Pin<Box<dyn Future<Output = T> + Send>>`.
 ///
@@ -89,27 +93,44 @@ impl<T> ReusableBoxFuture<T> {
     where
         F: Future<Output = T> + Send + 'static,
     {
-        // Drop the existing future, catching any panics.
-        let result = panic::catch_unwind(AssertUnwindSafe(|| {
-            ptr::drop_in_place(self.boxed.as_ptr());
-        }));
+        struct SetLayout<'a, F, T>
+        where
+            F: Future<Output = T> + Send + 'static,
+        {
+            rbf: &'a mut ReusableBoxFuture<T>,
+            new_future: ManuallyDrop<F>,
+        }
 
-        // Overwrite the future behind the pointer. This is safe because the
-        // allocation was allocated with the same size and alignment as the type F.
-        let self_ptr: *mut F = self.boxed.as_ptr() as *mut F;
-        ptr::write(self_ptr, future);
+        impl<'a, F, T> Drop for SetLayout<'a, F, T>
+        where
+            F: Future<Output = T> + Send + 'static,
+        {
+            fn drop(&mut self) {
+                // By doing the replacement on `drop` we make sure the change
+                // will happen even if the existing future panics on drop.
+                //
+                // We chould use `catch_unwind`, but it is not available in `no_std`.
+                unsafe {
+                    // Overwrite the future behind the pointer. This is safe because the
+                    // allocation was allocated with the same size and alignment as the type F.
+                    let fut_ptr: *mut F = self.rbf.boxed.as_ptr() as *mut F;
+                    ptr::write(fut_ptr, ManuallyDrop::take(&mut self.new_future));
 
-        // Update the vtable of self.boxed. The pointer is not null because we
-        // just got it from self.boxed, which is not null.
-        self.boxed = NonNull::new_unchecked(self_ptr);
-
-        // If the old future's destructor panicked, resume unwinding.
-        match result {
-            Ok(()) => {}
-            Err(payload) => {
-                panic::resume_unwind(payload);
+                    // Update the vtable of self.boxed. The pointer is not null because we
+                    // just got it from self.boxed, which is not null.
+                    self.rbf.boxed = NonNull::new_unchecked(fut_ptr);
+                }
             }
         }
+
+        let set_layout = SetLayout {
+            rbf: self,
+            new_future: ManuallyDrop::new(future),
+        };
+
+        // Drop the existing future.
+        ptr::drop_in_place(set_layout.rbf.boxed.as_ptr());
+        // Now `set_layout` will be dropped and do the replacement.
     }
 
     /// Get a pinned reference to the underlying future.
