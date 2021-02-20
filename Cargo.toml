@@ -1,6 +1,6 @@
 [package]
 name = "reusable-box-future"
-version = "0.0.0"
+version = "0.1.0"
 authors = [
     "Alice Ryhl <alice@ryhl.io>",
     "oblique <psyberbits@gmail.com>"
@@ -10,7 +10,7 @@ license = "MIT"
 
 description = "A reusable `Pin<Box<dyn Future<Output = T> + Send>>`"
 categories = ["asynchronous","memory-management"]
-keywords = ["reuse", "box", "future", "async"]
+keywords = ["reuse", "box", "future", "async", "no_std"]
 repository = "https://github.com/oblique/reusable-box-future"
 readme = "README.md"
 
