@@ -158,3 +158,15 @@ impl<T> fmt::Debug for ReusableLocalBoxFuture<T> {
         f.debug_struct("ReusableLocalBoxFuture").finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use static_assertions::{assert_impl_all, assert_not_impl_all};
+
+    #[test]
+    fn static_assertion() {
+        assert_impl_all!(ReusableLocalBoxFuture<()>: Unpin);
+        assert_not_impl_all!(ReusableLocalBoxFuture<()>: Sync, Send);
+    }
+}

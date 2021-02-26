@@ -1,0 +1,46 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+    tests:
+        name: Tests
+        runs-on: ubuntu-latest
+        env:
+            RUST_BACKTRACE: 1
+        steps:
+            - name: Install toolchain
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  override: true
+            - name: Checkout sources
+              uses: actions/checkout@v1
+            - name: Run tests
+              uses: actions-rs/cargo@v1
+              with:
+                  command: test
+                  args: --all-features
+    lints:
+        name: Lints
+        runs-on: ubuntu-latest
+        steps:
+            - name: Install toolchain
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  override: true
+                  components: rustfmt, clippy
+            - name: Checkout sources
+              uses: actions/checkout@v1
+            - name: Run cargo fmt
+              uses: actions-rs/cargo@v1
+              with:
+                  command: fmt
+                  args: --all -- --check
+            - name: Run cargo clippy
+              uses: actions-rs/cargo@v1
+              with:
+                  command: clippy
+                  args: -- -D clippy::all
