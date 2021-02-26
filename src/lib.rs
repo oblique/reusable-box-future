@@ -7,7 +7,7 @@
 //!
 //! [tokio-util]: https://docs.rs/tokio-util
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 extern crate alloc;
 
 mod box_future;

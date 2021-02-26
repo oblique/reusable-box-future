@@ -166,3 +166,109 @@ impl<T> fmt::Debug for ReusableBoxFuture<T> {
         f.debug_struct("ReusableBoxFuture").finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_executor::block_on;
+    use static_assertions::assert_impl_all;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct TestFut<T: Unpin> {
+        polled_nr: u32,
+        ready_val: u32,
+        dropped: Arc<AtomicBool>,
+        _buf: Option<T>,
+    }
+
+    impl<T: Unpin> TestFut<T> {
+        fn new(ready_val: u32) -> Self {
+            TestFut {
+                polled_nr: 0,
+                ready_val,
+                dropped: Arc::new(AtomicBool::new(false)),
+                _buf: None,
+            }
+        }
+    }
+
+    impl<T: Unpin> Future for TestFut<T> {
+        type Output = u32;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            self.polled_nr += 1;
+
+            match self.polled_nr {
+                1 => {
+                    // First poll, simulate pending
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                2 => {
+                    // Second poll, simulate ready
+                    Poll::Ready(self.ready_val)
+                }
+                _ => panic!("Future completed"),
+            }
+        }
+    }
+
+    impl<T: Unpin> Drop for TestFut<T> {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn alloc() {
+        block_on(async {
+            let test_fut = TestFut::<[u8; 32]>::new(1);
+            let dropped = Arc::clone(&test_fut.dropped);
+
+            let mut fut = ReusableBoxFuture::new(test_fut);
+            assert!(!dropped.load(Ordering::SeqCst));
+
+            assert_eq!((&mut fut).await, 1);
+            assert!(!dropped.load(Ordering::SeqCst));
+
+            let ptr = fut.boxed.as_ptr();
+            let test_fut = TestFut::<[u8; 32]>::new(2);
+            let dropped_2 = Arc::clone(&test_fut.dropped);
+            assert!(fut.try_set(test_fut).is_ok());
+            assert!(dropped.load(Ordering::SeqCst));
+            assert!(!dropped_2.load(Ordering::SeqCst));
+            assert_eq!(
+                ptr as *const _ as *mut u8,
+                fut.boxed.as_ptr() as *const _ as *mut u8
+            );
+
+            assert_eq!((&mut fut).await, 2);
+            assert!(!dropped_2.load(Ordering::SeqCst));
+
+            let test_fut = TestFut::<[u8; 256]>::new(3);
+            let dropped_3 = Arc::clone(&test_fut.dropped);
+            assert!(fut.try_set(test_fut).is_err());
+            assert!(!dropped_2.load(Ordering::SeqCst));
+            assert!(dropped_3.load(Ordering::SeqCst));
+
+            let test_fut = TestFut::<[u8; 256]>::new(4);
+            let dropped_4 = Arc::clone(&test_fut.dropped);
+            fut.set(test_fut);
+            assert!(dropped_2.load(Ordering::SeqCst));
+            assert!(!dropped_4.load(Ordering::SeqCst));
+            assert_ne!(
+                ptr as *const _ as *mut u8,
+                fut.boxed.as_ptr() as *const _ as *mut u8
+            );
+
+            assert_eq!((&mut fut).await, 4);
+            assert!(!dropped_4.load(Ordering::SeqCst));
+        })
+    }
+
+    #[test]
+    fn static_assertion() {
+        assert_impl_all!(ReusableBoxFuture<()>: Sync, Send, Unpin);
+    }
+}
