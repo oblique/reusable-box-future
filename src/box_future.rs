@@ -96,7 +96,7 @@ impl<T> ReusableBoxFuture<T> {
                 // By doing the replacement on `drop` we make sure the change
                 // will happen even if the existing future panics on drop.
                 //
-                // We chould use `catch_unwind`, but it is not available in `no_std`.
+                // We could use `catch_unwind`, but it is not available in `no_std`.
                 unsafe {
                     // Overwrite the future behind the pointer. This is safe because the
                     // allocation was allocated with the same size and alignment as the type F.
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use futures_executor::block_on;
     use static_assertions::assert_impl_all;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     struct TestFut<T: Unpin> {
@@ -270,5 +270,70 @@ mod tests {
     #[test]
     fn static_assertion() {
         assert_impl_all!(ReusableBoxFuture<()>: Sync, Send, Unpin);
+    }
+
+    #[test]
+    fn panicking_drop() {
+        struct PanicDrop(Arc<AtomicUsize>);
+
+        impl Future for PanicDrop {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+                Poll::Ready(())
+            }
+        }
+
+        impl Drop for PanicDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+
+                if !std::thread::panicking() {
+                    panic!(1u32);
+                }
+            }
+        }
+
+        // We use this second type to verify that we replace vtable by having a different
+        // drop implementation (i.e. adding 100 instead of 1)
+        struct NonPanicDrop(Arc<AtomicUsize>);
+
+        impl Future for NonPanicDrop {
+            type Output = ();
+
+            fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+                Poll::Ready(())
+            }
+        }
+
+        impl Drop for NonPanicDrop {
+            fn drop(&mut self) {
+                self.0.fetch_add(100, Ordering::Relaxed);
+            }
+        }
+
+        let drop1 = Arc::new(AtomicUsize::new(0));
+        let drop2 = Arc::new(AtomicUsize::new(0));
+
+        let result = std::panic::catch_unwind({
+            let drop1 = Arc::clone(&drop1);
+            let drop2 = Arc::clone(&drop2);
+
+            move || {
+                let mut fut = ReusableBoxFuture::new(PanicDrop(drop1));
+
+                match fut.try_set(NonPanicDrop(drop2)) {
+                    Ok(_) => panic!(2u32),
+                    Err(_) => panic!(3u32),
+                }
+            }
+        });
+
+        // Make sure that panic was propagated correctly
+        assert_eq!(*result.err().unwrap().downcast::<u32>().unwrap(), 1);
+
+        // Make sure we drop only once per item
+        assert_eq!(drop1.load(Ordering::Relaxed), 1);
+        assert_eq!(drop2.load(Ordering::Relaxed), 100);
     }
 }

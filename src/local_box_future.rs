@@ -96,7 +96,7 @@ impl<T> ReusableLocalBoxFuture<T> {
                 // By doing the replacement on `drop` we make sure the change
                 // will happen even if the existing future panics on drop.
                 //
-                // We chould use `catch_unwind`, but it is not available in `no_std`.
+                // We could use `catch_unwind`, but it is not available in `no_std`.
                 unsafe {
                     // Overwrite the future behind the pointer. This is safe because the
                     // allocation was allocated with the same size and alignment as the type F.
